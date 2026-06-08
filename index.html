@@ -1,4 +1,57 @@
-<!DOCTYPE html>
+
+  // ─── OCR: Scan ISBN from text (copyright page photo) ───
+  window._scanISBNText = function() {
+    if (!('TextDetector' in window)) {
+      lastScanEl.textContent = '⚠️ TextDetector not supported on this device';
+      return;
+    }
+    // Take a photo
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.capture = 'environment';
+    input.onchange = function(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      lastScanEl.textContent = '🔍 Scanning text...';
+      var img = new Image();
+      img.onload = function() {
+        var detector = new TextDetector();
+        detector.detect(img).then(function(texts) {
+          // Combine all detected text
+          var allText = texts.map(function(t) { return t.rawValue; }).join(' ');
+          // Look for ISBN patterns
+          var isbn13 = allText.match(/97[89][\d\-\s]{10,16}\d/);
+          var isbn10 = allText.match(/\d[\d\-\s]{8,12}[\dXx]/);
+          var isbnLabel = allText.match(/ISBN[:\s\-]*([0-9X\-\s]{10,17})/i);
+
+          var found = '';
+          if (isbnLabel) {
+            found = isbnLabel[1].replace(/[\-\s]/g, '');
+          } else if (isbn13) {
+            found = isbn13[0].replace(/[\-\s]/g, '');
+          } else if (isbn10) {
+            found = isbn10[0].replace(/[\-\s]/g, '');
+          }
+
+          if (found && (found.length === 10 || found.length === 13)) {
+            addISBN(found);
+          } else if (found) {
+            // Put partial match in input for manual correction
+            document.getElementById('manual-isbn').value = found;
+            lastScanEl.textContent = '⚠️ Found "' + found + '" — check and tap Add';
+          } else {
+            lastScanEl.textContent = '❌ No ISBN found in image. Try manual entry.';
+          }
+        }).catch(function(err) {
+          lastScanEl.textContent = '❌ OCR failed: ' + err.message;
+        });
+      };
+      img.src = URL.createObjectURL(file);
+    };
+    input.click();
+  };
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -250,7 +303,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.7 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.8 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -269,6 +322,7 @@ button {
   <div id="isbn-entry">
     <input type="text" id="manual-isbn" placeholder="Type ISBN manually" inputmode="numeric">
     <button onclick="window._addManualISBN()">Add</button>
+    <button onclick="window._scanISBNText()" style="background:#7b68ee; color:#fff; padding:10px 12px; flex:0; font-size:0.8rem;">📖 OCR</button>
   </div>
 </div>
 
