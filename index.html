@@ -239,7 +239,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555">v1.3</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.4 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -296,11 +296,23 @@ button {
 
 <div id="actions">
   <button id="copy-btn" onclick="window._exportData('copy')">📋 Copy</button>
-  <button id="share-btn" onclick="window._exportData('share')">💾 Save File</button>
+  <button id="share-btn" onclick="window._exportData('share')">📤 Sync</button>
   <button id="clear-btn" onclick="window._clearAll()">🗑️ Clear</button>
 </div>
 
 <div id="error"></div>
+
+<!-- Settings panel (hidden by default) -->
+<div id="settings-panel" style="display:none; padding:16px; background:#0f3460; margin:8px 16px; border-radius:8px;">
+  <h3 style="font-size:0.95rem; margin-bottom:8px;">⚙️ Settings</h3>
+  <label style="font-size:0.8rem; color:#aaa;">Dropbox Access Token</label>
+  <input type="password" id="dropbox-token" placeholder="Paste token here" style="width:100%; padding:8px; border-radius:4px; border:1px solid #16213e; background:#1a1a2e; color:#eee; font-size:0.85rem; margin-top:4px; font-family:monospace;">
+  <div style="display:flex; gap:8px; margin-top:8px;">
+    <button onclick="window._saveSettings()" style="background:#4ecca3; color:#1a1a2e; padding:8px 16px; flex:1;">Save</button>
+    <button onclick="window._hideSettings()" style="background:#e94560; color:#fff; padding:8px 16px; flex:0;">Close</button>
+  </div>
+  <p style="font-size:0.7rem; color:#666; margin-top:8px;">Get token at dropbox.com/developers/apps → your app → Generate access token</p>
+</div>
 
 <script>
 (function() {
@@ -537,25 +549,63 @@ button {
         .catch(function() { if(statusEl) statusEl.textContent = '❌ Copy failed'; });
 
     } else if (mode === 'share') {
-      // Download ISBNs file
+      // Upload to Dropbox
       if (data.hasISBNs) {
-        var blob = new Blob([data.isbnText], {type: 'text/plain'});
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = 'isbns.txt'; a.click();
-        URL.revokeObjectURL(url);
+        uploadToDropbox('isbns.txt', data.isbnText);
       }
-      // Download manual entries
       if (data.hasManual) {
-        var blob2 = new Blob([data.manualJSON], {type: 'application/json'});
-        var url2 = URL.createObjectURL(blob2);
-        var a2 = document.createElement('a');
-        a2.href = url2; a2.download = 'manual_books.json'; a2.click();
-        URL.revokeObjectURL(url2);
+        uploadToDropbox('manual_books.json', data.manualJSON);
       }
-      if(statusEl) statusEl.textContent = '💾 Saved to Downloads';
     }
   };
+
+  // ─── Settings ───
+  window._showSettings = function() {
+    var panel = document.getElementById('settings-panel');
+    var input = document.getElementById('dropbox-token');
+    input.value = storageGet('dropboxToken') || '';
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  };
+  window._hideSettings = function() {
+    document.getElementById('settings-panel').style.display = 'none';
+  };
+  window._saveSettings = function() {
+    var token = document.getElementById('dropbox-token').value.trim();
+    storageSet('dropboxToken', token);
+    document.getElementById('settings-panel').style.display = 'none';
+    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
+    if (statusEl) statusEl.textContent = token ? '✅ Token saved' : '⚠️ Token cleared';
+  };
+
+  // ─── Dropbox Upload ───
+  function uploadToDropbox(filename, content) {
+    var token = storageGet('dropboxToken');
+    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
+    if (!token) {
+      if (statusEl) statusEl.textContent = '⚠️ Set Dropbox token in ⚙️ Settings first';
+      return;
+    }
+    if (statusEl) statusEl.textContent = '⏳ Uploading to Dropbox...';
+    fetch('https://content.dropboxapi.com/2/files/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Dropbox-API-Arg': JSON.stringify({
+          path: '/' + filename,
+          mode: 'overwrite',
+          autorename: false,
+          mute: false
+        }),
+        'Content-Type': 'application/octet-stream'
+      },
+      body: content
+    }).then(function(resp) {
+      if (resp.ok) { if (statusEl) statusEl.textContent = '✅ Saved to Dropbox!'; }
+      else { resp.text().then(function(t) { if (statusEl) statusEl.textContent = '❌ ' + (JSON.parse(t).error_summary || 'Upload failed'); }); }
+    }).catch(function(err) {
+      if (statusEl) statusEl.textContent = '❌ ' + err.message;
+    });
+  }
 
   function downloadFile(content, filename, mimeType) {
     var blob = new Blob([content], { type: mimeType });
