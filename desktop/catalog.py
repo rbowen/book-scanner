@@ -21,6 +21,7 @@ Configuration:
 """
 
 import html as html_mod
+import base64
 import json
 import os
 import re
@@ -321,6 +322,27 @@ def assign_covers(config):
     remaining = []
     for i, cover_entry in enumerate(loose_covers):
         print(f"  Cover photo {i + 1}/{len(loose_covers)} (taken {time.strftime('%Y-%m-%d %H:%M', time.localtime(cover_entry['timestamp'] / 1000))})")
+
+        # Save to temp file and open in Preview
+        cover_data = cover_entry.get("cover", "")
+        if cover_data and cover_data.startswith("data:image"):
+            import tempfile
+            header, b64data = cover_data.split(",", 1)
+            if b64data:
+                ext = ".jpg" if "jpeg" in header else ".png"
+                tmp_path = Path(tempfile.gettempdir()) / f"cover_preview_{i}{ext}"
+                with open(tmp_path, "wb") as tf:
+                    tf.write(base64.b64decode(b64data))
+                subprocess.run(["open", str(tmp_path)])
+            else:
+                print("    ⚠️  Empty cover image — skipping.")
+                remaining.append(cover_entry)
+                continue
+        else:
+            print("    ⚠️  Invalid/empty cover data — skipping.")
+            remaining.append(cover_entry)
+            continue
+
         query = input("  Assign to which book? (search, or Enter to skip): ").strip().lower()
         if not query:
             remaining.append(cover_entry)
