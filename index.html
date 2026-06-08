@@ -145,6 +145,39 @@ video {
   flex-direction: column;
   gap: 8px;
 }
+.crop-container {
+  position: relative;
+  width: 100%;
+  max-width: 300px;
+  margin: 0 auto;
+  touch-action: none;
+  display: none;
+}
+.crop-container img {
+  width: 100%;
+  display: block;
+  border-radius: 6px;
+}
+.crop-overlay {
+  position: absolute;
+  border: 2px dashed #4ecca3;
+  background: rgba(78,204,163,0.1);
+  cursor: move;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
+}
+.crop-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  justify-content: center;
+}
+.crop-actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.crop-confirm { background: #4ecca3 !important; color: #1a1a2e !important; }
+.crop-cancel { background: #e94560 !important; color: #fff !important; }
 .cover-capture .preview {
   width: 120px;
   height: 160px;
@@ -241,6 +274,14 @@ button {
     </div>
     <div class="cover-capture">
       <label>Cover Photo (optional)</label>
+      <div class="crop-container" id="crop-container">
+        <img id="crop-img" src="">
+        <div class="crop-overlay" id="crop-overlay"></div>
+        <div class="crop-actions">
+          <button class="crop-confirm" onclick="window._cropConfirm()">✂️ Crop</button>
+          <button class="crop-cancel" onclick="window._cropCancel()">✕ Cancel</button>
+        </div>
+      </div>
       <div class="preview" id="cover-preview">
         <span class="placeholder">📷</span>
       </div>
@@ -344,12 +385,81 @@ button {
     if (!file) return;
     var reader = new FileReader();
     reader.onload = function(ev) {
-      coverDataURL = ev.target.result;
-      document.getElementById('cover-preview').innerHTML =
-        '<img src="' + coverDataURL + '" alt="Cover">';
+      // Show crop UI instead of directly setting cover
+      var rawURL = ev.target.result;
+      var cropContainer = document.getElementById('crop-container');
+      var cropImg = document.getElementById('crop-img');
+      var cropOverlay = document.getElementById('crop-overlay');
+      cropImg.src = rawURL;
+      cropContainer.style.display = 'block';
+      document.getElementById('cover-preview').style.display = 'none';
+
+      // Wait for image to load, then set default crop area
+      cropImg.onload = function() {
+        var w = cropImg.clientWidth;
+        var h = cropImg.clientHeight;
+        // Default crop: centered, 70% of image, book proportions (2:3)
+        var cropH = h * 0.85;
+        var cropW = cropH * 0.67;
+        if (cropW > w * 0.9) { cropW = w * 0.9; cropH = cropW / 0.67; }
+        var left = (w - cropW) / 2;
+        var top = (h - cropH) / 2;
+        cropOverlay.style.left = left + 'px';
+        cropOverlay.style.top = top + 'px';
+        cropOverlay.style.width = cropW + 'px';
+        cropOverlay.style.height = cropH + 'px';
+
+        // Drag to move crop area
+        var dragging = false, startX, startY, origLeft, origTop;
+        cropOverlay.onpointerdown = function(ev2) {
+          dragging = true;
+          startX = ev2.clientX; startY = ev2.clientY;
+          origLeft = parseFloat(cropOverlay.style.left);
+          origTop = parseFloat(cropOverlay.style.top);
+          cropOverlay.setPointerCapture(ev2.pointerId);
+        };
+        cropOverlay.onpointermove = function(ev2) {
+          if (!dragging) return;
+          var dx = ev2.clientX - startX;
+          var dy = ev2.clientY - startY;
+          var newLeft = Math.max(0, Math.min(w - parseFloat(cropOverlay.style.width), origLeft + dx));
+          var newTop = Math.max(0, Math.min(h - parseFloat(cropOverlay.style.height), origTop + dy));
+          cropOverlay.style.left = newLeft + 'px';
+          cropOverlay.style.top = newTop + 'px';
+        };
+        cropOverlay.onpointerup = function() { dragging = false; };
+      };
     };
     reader.readAsDataURL(file);
   });
+
+  window._cropConfirm = function() {
+    var cropImg = document.getElementById('crop-img');
+    var cropOverlay = document.getElementById('crop-overlay');
+    // Calculate crop in image coordinates
+    var scaleX = cropImg.naturalWidth / cropImg.clientWidth;
+    var scaleY = cropImg.naturalHeight / cropImg.clientHeight;
+    var sx = parseFloat(cropOverlay.style.left) * scaleX;
+    var sy = parseFloat(cropOverlay.style.top) * scaleY;
+    var sw = parseFloat(cropOverlay.style.width) * scaleX;
+    var sh = parseFloat(cropOverlay.style.height) * scaleY;
+    // Draw cropped area to canvas
+    var canvas = document.createElement('canvas');
+    canvas.width = sw; canvas.height = sh;
+    var ctx = canvas.getContext('2d');
+    ctx.drawImage(cropImg, sx, sy, sw, sh, 0, 0, sw, sh);
+    coverDataURL = canvas.toDataURL('image/jpeg', 0.85);
+    // Show preview
+    document.getElementById('cover-preview').innerHTML = '<img src="' + coverDataURL + '" alt="Cover">';
+    document.getElementById('cover-preview').style.display = 'flex';
+    document.getElementById('crop-container').style.display = 'none';
+  };
+
+  window._cropCancel = function() {
+    document.getElementById('crop-container').style.display = 'none';
+    document.getElementById('cover-preview').style.display = 'flex';
+    coverDataURL = '';
+  };
 
   window._addManualBook = function() {
     var title = document.getElementById('m-title').value.trim();
@@ -416,14 +526,15 @@ button {
   window._exportData = function(mode) {
     if (books.length === 0) return;
     var data = buildExportData();
+    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
 
     if (mode === 'copy') {
       var text = '';
       if (data.hasISBNs) text += data.isbnText;
       if (data.hasManual) text += (text ? '\n' : '') + data.manualJSON;
       navigator.clipboard.writeText(text)
-        .then(function() { lastScanEl.textContent = '📋 Copied!'; })
-        .catch(function() { lastScanEl.textContent = '❌ Copy failed'; });
+        .then(function() { if(statusEl) statusEl.textContent = '📋 Copied!'; })
+        .catch(function() { if(statusEl) statusEl.textContent = '❌ Copy failed'; });
 
     } else if (mode === 'share') {
       var files = [];
@@ -435,19 +546,23 @@ button {
       }
       if (navigator.canShare && navigator.canShare({ files: files })) {
         navigator.share({ files: files, title: 'Book Scanner Export' })
-          .then(function() { lastScanEl.textContent = '✅ Shared!'; })
-          .catch(function(err) { lastScanEl.textContent = '❌ Share cancelled'; });
+          .then(function() { if(statusEl) statusEl.textContent = '✅ Shared!'; })
+          .catch(function(err) { if(statusEl) statusEl.textContent = '❌ ' + (err.message || 'Share cancelled'); });
       } else if (navigator.share) {
-        // Fallback: share as text
         var text = '';
         if (data.hasISBNs) text += data.isbnText;
         if (data.hasManual) text += (text ? '\n' : '') + data.manualJSON;
         navigator.share({ title: 'Book Scanner Export', text: text })
-          .then(function() { lastScanEl.textContent = '✅ Shared!'; })
-          .catch(function(err) { lastScanEl.textContent = '❌ Share: ' + err.message; });
+          .then(function() { if(statusEl) statusEl.textContent = '✅ Shared!'; })
+          .catch(function(err) { if(statusEl) statusEl.textContent = '❌ ' + (err.message || 'Share failed'); });
       } else {
-        window._exportData('copy');
-        lastScanEl.textContent = '📋 Copied (share not available)';
+        // Final fallback: download as file
+        var blob = new Blob([data.isbnText + (data.hasManual ? '\n' + data.manualJSON : '')], {type:'text/plain'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'isbns.txt'; a.click();
+        URL.revokeObjectURL(url);
+        if(statusEl) statusEl.textContent = '💾 Downloaded (share unavailable)';
       }
     }
   };
