@@ -1,0 +1,5 @@
+{
+  "isbns_file": "~/Library/CloudStorage/Dropbox/Apps/book-scanner/isbns.txt",
+  "publish_target": "user@example.com:/var/www/html/books/",
+  "site_title": "My Library"
+}

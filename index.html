@@ -239,7 +239,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555">v1.3</span>
 </header>
 
 <div class="tabs">
@@ -296,7 +296,7 @@ button {
 
 <div id="actions">
   <button id="copy-btn" onclick="window._exportData('copy')">📋 Copy</button>
-  <button id="share-btn" onclick="window._exportData('share')">📤 Send to Dropbox</button>
+  <button id="share-btn" onclick="window._exportData('share')">💾 Save File</button>
   <button id="clear-btn" onclick="window._clearAll()">🗑️ Clear</button>
 </div>
 
@@ -537,33 +537,23 @@ button {
         .catch(function() { if(statusEl) statusEl.textContent = '❌ Copy failed'; });
 
     } else if (mode === 'share') {
-      var files = [];
+      // Download ISBNs file
       if (data.hasISBNs) {
-        files.push(new File([data.isbnText], 'isbns.txt', { type: 'text/plain' }));
-      }
-      if (data.hasManual) {
-        files.push(new File([data.manualJSON], 'manual_books.json', { type: 'application/json' }));
-      }
-      if (navigator.canShare && navigator.canShare({ files: files })) {
-        navigator.share({ files: files, title: 'Book Scanner Export' })
-          .then(function() { if(statusEl) statusEl.textContent = '✅ Shared!'; })
-          .catch(function(err) { if(statusEl) statusEl.textContent = '❌ ' + (err.message || 'Share cancelled'); });
-      } else if (navigator.share) {
-        var text = '';
-        if (data.hasISBNs) text += data.isbnText;
-        if (data.hasManual) text += (text ? '\n' : '') + data.manualJSON;
-        navigator.share({ title: 'Book Scanner Export', text: text })
-          .then(function() { if(statusEl) statusEl.textContent = '✅ Shared!'; })
-          .catch(function(err) { if(statusEl) statusEl.textContent = '❌ ' + (err.message || 'Share failed'); });
-      } else {
-        // Final fallback: download as file
-        var blob = new Blob([data.isbnText + (data.hasManual ? '\n' + data.manualJSON : '')], {type:'text/plain'});
+        var blob = new Blob([data.isbnText], {type: 'text/plain'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url; a.download = 'isbns.txt'; a.click();
         URL.revokeObjectURL(url);
-        if(statusEl) statusEl.textContent = '💾 Downloaded (share unavailable)';
       }
+      // Download manual entries
+      if (data.hasManual) {
+        var blob2 = new Blob([data.manualJSON], {type: 'application/json'});
+        var url2 = URL.createObjectURL(blob2);
+        var a2 = document.createElement('a');
+        a2.href = url2; a2.download = 'manual_books.json'; a2.click();
+        URL.revokeObjectURL(url2);
+      }
+      if(statusEl) statusEl.textContent = '💾 Saved to Downloads';
     }
   };
 
