@@ -214,6 +214,71 @@ def lookup_isbn(isbn):
     return None
 
 
+def find_cover_url(isbn):
+    """Try to find a cover image URL for a given ISBN.
+    
+    Tries Open Library Covers API first (direct URL, very fast),
+    then falls back to Google Books.
+    """
+    # Try Open Library Covers API
+    ol_url = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"
+    try:
+        req = urllib.request.Request(ol_url, headers={"User-Agent": "BookCatalog/1.0"})
+        resp = urllib.request.urlopen(req, timeout=5)
+        # Check that it's actually an image (not a tiny placeholder)
+        data = resp.read()
+        if len(data) > 1000:  # Real covers are >1KB; placeholder is ~43 bytes
+            return ol_url
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        pass
+
+    # Fall back to Google Books
+    url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "BookCatalog/1.0"})
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+        if data.get("totalItems", 0) > 0:
+            item = data["items"][0]["volumeInfo"]
+            cover = item.get("imageLinks", {}).get("thumbnail", "")
+            if cover:
+                return cover.replace("http://", "https://")
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError):
+        pass
+    return ""
+
+
+def lookup_upc(upc):
+    """Look up a UPC code in the UPC Item Database."""
+    url = f"https://api.upcitemdb.com/prod/trial/lookup?upc={upc}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "BookCatalog/1.0",
+            "Accept": "application/json",
+        })
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+        if data.get("items"):
+            item = data["items"][0]
+            title = item.get("title", "")
+            if not title:
+                return None
+            return {
+                "isbn": upc,
+                "title": title,
+                "authors": [],
+                "publishers": [item.get("brand", "")] if item.get("brand") else [],
+                "publish_date": "",
+                "pages": "",
+                "cover_url": (item.get("images") or [""])[0] if item.get("images") else "",
+                "subjects": [item.get("category", "")] if item.get("category") else [],
+                "source": "upcitemdb",
+            }
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError, IndexError):
+        pass
+    return None
+
+
 # ─── Edit ────────────────────────────────────────────────────────────────────
 
 
@@ -275,6 +340,7 @@ def edit_library():
         library[lib_idx]["publishers"] = [new_pub]
     if new_year:
         library[lib_idx]["publish_date"] = new_year
+    new_cover = os.path.expanduser(new_cover) if new_cover else ""
     if new_cover and os.path.exists(new_cover):
         COVERS_DIR.mkdir(parents=True, exist_ok=True)
         ext = os.path.splitext(new_cover)[1] or ".jpg"
@@ -286,6 +352,63 @@ def edit_library():
 
     save_library(library)
     print(f"\n  ✅ Updated: {library[lib_idx]['title']}")
+
+
+# ─── Cleanup ─────────────────────────────────────────────────────────────────
+
+
+def cleanup_library():
+    """Show Unknown/not_found entries and let user fix or remove them."""
+    library = load_library()
+    unknowns = [(i, b) for i, b in enumerate(library)
+                if b.get("title", "").startswith("Unknown") or b.get("source") == "not_found"]
+
+    if not unknowns:
+        print("No unknown/unfound entries to clean up.")
+        return
+
+    print(f"\n── Cleanup ({len(unknowns)} unknown entries) ──\n")
+
+    to_remove = []
+    for idx, (lib_idx, book) in enumerate(unknowns):
+        isbn = book.get("isbn", "?")
+        title = book.get("title", "?")
+        print(f"  [{idx + 1}] {title} (code: {isbn})")
+
+    print(f"\n  Options:")
+    print(f"    d <numbers>  — delete entries (e.g. 'd 1 3 5')")
+    print(f"    e <number>   — edit an entry (fix title/author)")
+    print(f"    q            — quit without changes")
+
+    action = input("\n  Action: ").strip().lower()
+
+    if action.startswith("d"):
+        nums = [int(x) for x in action[1:].split() if x.isdigit()]
+        indices_to_remove = sorted([unknowns[n - 1][0] for n in nums if 1 <= n <= len(unknowns)], reverse=True)
+        for i in indices_to_remove:
+            removed = library.pop(i)
+            print(f"    🗑️  Removed: {removed.get('title', '?')}")
+        save_library(library)
+        print(f"\n  {len(indices_to_remove)} entries removed. Library total: {len(library)}")
+    elif action.startswith("e"):
+        num = int(action[1:].strip()) if action[1:].strip().isdigit() else 0
+        if 1 <= num <= len(unknowns):
+            # Reuse edit flow
+            lib_idx = unknowns[num - 1][0]
+            book = library[lib_idx]
+            print(f"\n  Editing: {book.get('title', '?')} (code: {book.get('isbn', '?')})")
+            print(f"  (Press Enter to keep current value)\n")
+            new_title = input(f"  Title [{book.get('title', '')}]: ").strip()
+            new_authors = input(f"  Authors [{', '.join(book.get('authors', []))}]: ").strip()
+            if new_title:
+                library[lib_idx]["title"] = new_title
+            if new_authors:
+                library[lib_idx]["authors"] = [a.strip() for a in new_authors.split(",")]
+            library[lib_idx]["source"] = "manual"
+            save_library(library)
+            print(f"  ✅ Updated: {library[lib_idx]['title']}")
+    elif action == "q":
+        return
 
 
 # ─── Assign Covers ─────────────────────────────────────────────────────────────
@@ -432,7 +555,15 @@ def lookup_by_title_author(title, author):
 def download_cover(book, covers_dir):
     """Download cover image and return local filename."""
     if not book.get("cover_url"):
-        return ""
+        # Try Google Books as a cover source fallback
+        if book.get("isbn"):
+            print(f"    📷 Searching for cover: {book.get('title', '?')[:40]}...", end=" ", flush=True)
+            book["cover_url"] = find_cover_url(book["isbn"])
+        if not book.get("cover_url"):
+            print("not found")
+            return ""
+        else:
+            print("found!")
     isbn = book.get("isbn", "manual")
     filename = f"{isbn or book['title'].replace(' ', '_')[:30]}.jpg"
     filepath = covers_dir / filename
@@ -532,18 +663,23 @@ def manual_add():
 # ─── Catalog Generation ──────────────────────────────────────────────────────
 
 
-def generate_catalog(library, config):
+def generate_catalog(library, config, skip_covers=False):
     """Generate a static HTML catalog with search, sort, and detail modals."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Download covers
-    print("Downloading cover images...")
+    if not skip_covers:
+      print("Downloading cover images...")
+    covers_updated = False
     for book in library:
-        if not book.get("local_cover"):
+        if not skip_covers and not book.get("local_cover"):
             cover = download_cover(book, COVERS_DIR)
             if cover:
                 book["local_cover"] = cover
+                covers_updated = True
+    if covers_updated:
+        save_library(library)
 
     # Build JSON data for the frontend
     site_title = config.get("site_title", "My Library")
@@ -990,20 +1126,26 @@ def main():
             edit_library()
             library = load_library()
             if library:
-                generate_catalog(library, config)
+                generate_catalog(library, config, skip_covers=True)
             return
         elif command == "covers":
             assign_covers(config)
             library = load_library()
             if library:
-                generate_catalog(library, config)
+                generate_catalog(library, config, skip_covers=True)
+            return
+        elif command == "cleanup":
+            cleanup_library()
+            library = load_library()
+            if library:
+                generate_catalog(library, config, skip_covers=True)
             return
         elif command == "publish":
             publish(config)
             return
         else:
             print(f"Unknown command: {command}")
-            print("Usage: python catalog.py [add|edit|covers|publish]")
+            print("Usage: python catalog.py [add|edit|covers|cleanup|publish]")
             return
 
     # Default: process ISBNs and generate catalog
@@ -1038,7 +1180,27 @@ def main():
 
         # Skip UPC codes (12 digits, not an ISBN)
         if len(isbn) == 12 and not isbn.startswith('978') and not isbn.startswith('979'):
-            print(f"⚠️  UPC code (not an ISBN) — use manual entry for this book")
+            print(f"⚠️  UPC code — trying product database...", end=" ", flush=True)
+            book = lookup_upc(isbn)
+            if book:
+                library.append(book)
+                print(f"✅ {book['title']}")
+                new_count += 1
+            else:
+                print(f"❌ Not found. Use manual entry for UPC {isbn}")
+                library.append({
+                    "isbn": isbn,
+                    "title": f"Unknown (UPC: {isbn})",
+                    "authors": ["Unknown"],
+                    "publishers": [],
+                    "publish_date": "",
+                    "pages": "",
+                    "cover_url": "",
+                    "subjects": [],
+                    "source": "not_found",
+                })
+                new_count += 1
+            time.sleep(1)
             continue
 
         book = lookup_isbn(isbn)

@@ -250,7 +250,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v2.3 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v2.5 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -816,26 +816,50 @@ button {
 
       try {
         var barcodes = await detector.detect(video);
+        // If multiple barcodes in same frame, prefer ISBN (978/979) over UPC
+        var codes = [];
         for (var i = 0; i < barcodes.length; i++) {
-          var code = barcodes[i].rawValue;
+          if (barcodes[i].rawValue) codes.push(barcodes[i].rawValue);
+        }
+        // Check if any code is a proper ISBN — if so, ignore non-ISBNs in same frame
+        var hasISBN = codes.some(function(c) {
+          return c.length === 13 && (c.startsWith('978') || c.startsWith('979'));
+        });
+        for (var i = 0; i < codes.length; i++) {
+          var code = codes[i];
           if (!code) continue;
           var isbn = '';
           // EAN-13 book barcodes (978/979 prefix)
           if (code.length === 13 && (code.startsWith('978') || code.startsWith('979'))) {
             isbn = code;
-          // UPC-A: 12 digits — some US mass-market paperbacks used these
+          // UPC-A: 12 digits — only accept if NO ISBN was found in the same frame
           } else if (code.length === 12) {
+            if (hasISBN) continue; // skip price/supplemental barcode
             isbn = code;
           // ISBN-10 (10 digits, sometimes encoded in Code 39/128 on older books)
           } else if (code.length === 10) {
             isbn = code;
           // EAN-8: rare, but some booklets/pamphlets
           } else if (code.length === 8) {
+            if (hasISBN) continue; // skip supplemental code
             isbn = code;
           }
           if (isbn) {
             lastScanTime = now;
-            addISBN(isbn);
+            // UPC detection: prompt for title when it's a 12-digit non-ISBN code
+            if (isbn.length === 12 && !isbn.startsWith('978') && !isbn.startsWith('979')) {
+              var title = prompt('UPC barcode detected (' + isbn + ').\nThis is not an ISBN. Enter the book title (or Cancel to skip):');
+              if (title && title.trim()) {
+                books.push({ type: 'manual', title: title.trim(), author: '', cover: '', upc: isbn });
+                lastScanEl.textContent = '✅ ' + title.trim() + ' (UPC)';
+                if (navigator.vibrate) navigator.vibrate(100);
+                updateUI();
+              } else {
+                lastScanEl.textContent = '⚠️ UPC ' + isbn + ' skipped';
+              }
+            } else {
+              addISBN(isbn);
+            }
             break;
           }
         }
