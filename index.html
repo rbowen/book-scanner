@@ -250,7 +250,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.6 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.7 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -486,7 +486,9 @@ button {
   });
 
   // ─── Loose cover photo (no book association) ───
+  var looseMode = false;
   window._takeLooseCover = function() {
+    looseMode = true;
     var input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
@@ -496,12 +498,13 @@ button {
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function(ev) {
-        // Store as an unassigned cover
-        var covers = JSON.parse(storageGet('looseCovers') || '[]');
-        covers.push({ cover: ev.target.result, timestamp: Date.now() });
-        storageSet('looseCovers', JSON.stringify(covers));
-        var statusEl = document.getElementById('manual-status');
-        if (statusEl) statusEl.textContent = '📷 Cover saved (' + covers.length + ' unassigned)';
+        // Show crop UI (same as regular cover)
+        var rawURL = ev.target.result;
+        var cropContainer = document.getElementById('crop-container');
+        var cropImg = document.getElementById('crop-img');
+        cropImg.src = rawURL;
+        cropContainer.style.display = 'block';
+        document.getElementById('cover-preview').style.display = 'none';
       };
       reader.readAsDataURL(file);
     };
@@ -523,17 +526,31 @@ button {
     canvas.width = sw; canvas.height = sh;
     var ctx = canvas.getContext('2d');
     ctx.drawImage(cropImg, sx, sy, sw, sh, 0, 0, sw, sh);
-    coverDataURL = canvas.toDataURL('image/jpeg', 0.85);
-    // Show preview
-    document.getElementById('cover-preview').innerHTML = '<img src="' + coverDataURL + '" alt="Cover">';
-    document.getElementById('cover-preview').style.display = 'flex';
+    var croppedURL = canvas.toDataURL('image/jpeg', 0.85);
     document.getElementById('crop-container').style.display = 'none';
+
+    if (looseMode) {
+      // Save as unassigned cover
+      var covers = JSON.parse(storageGet('looseCovers') || '[]');
+      covers.push({ cover: croppedURL, timestamp: Date.now() });
+      storageSet('looseCovers', JSON.stringify(covers));
+      var statusEl = document.getElementById('manual-status');
+      if (statusEl) statusEl.textContent = '📷 Cover saved (' + covers.length + ' unassigned)';
+      document.getElementById('cover-preview').style.display = 'flex';
+      looseMode = false;
+    } else {
+      // Regular cover for manual book entry
+      coverDataURL = croppedURL;
+      document.getElementById('cover-preview').innerHTML = '<img src="' + coverDataURL + '" alt="Cover">';
+      document.getElementById('cover-preview').style.display = 'flex';
+    }
   };
 
   window._cropCancel = function() {
     document.getElementById('crop-container').style.display = 'none';
     document.getElementById('cover-preview').style.display = 'flex';
     coverDataURL = '';
+    looseMode = false;
   };
 
   window._addManualBook = function() {
