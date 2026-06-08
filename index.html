@@ -434,15 +434,20 @@ button {
         files.push(new File([data.manualJSON], 'manual_books.json', { type: 'application/json' }));
       }
       if (navigator.canShare && navigator.canShare({ files: files })) {
-        navigator.share({ files: files, title: 'Book Scanner Export' }).catch(function() {});
+        navigator.share({ files: files, title: 'Book Scanner Export' })
+          .then(function() { lastScanEl.textContent = '✅ Shared!'; })
+          .catch(function(err) { lastScanEl.textContent = '❌ Share cancelled'; });
       } else if (navigator.share) {
         // Fallback: share as text
         var text = '';
         if (data.hasISBNs) text += data.isbnText;
         if (data.hasManual) text += (text ? '\n' : '') + data.manualJSON;
-        navigator.share({ title: 'Book Scanner Export', text: text }).catch(function() {});
+        navigator.share({ title: 'Book Scanner Export', text: text })
+          .then(function() { lastScanEl.textContent = '✅ Shared!'; })
+          .catch(function(err) { lastScanEl.textContent = '❌ Share: ' + err.message; });
       } else {
         window._exportData('copy');
+        lastScanEl.textContent = '📋 Copied (share not available)';
       }
     }
   };
