@@ -239,7 +239,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.4 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.5 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -305,13 +305,13 @@ button {
 <!-- Settings panel (hidden by default) -->
 <div id="settings-panel" style="display:none; padding:16px; background:#0f3460; margin:8px 16px; border-radius:8px;">
   <h3 style="font-size:0.95rem; margin-bottom:8px;">⚙️ Settings</h3>
-  <label style="font-size:0.8rem; color:#aaa;">Dropbox Access Token</label>
-  <input type="password" id="dropbox-token" placeholder="Paste token here" style="width:100%; padding:8px; border-radius:4px; border:1px solid #16213e; background:#1a1a2e; color:#eee; font-size:0.85rem; margin-top:4px; font-family:monospace;">
-  <div style="display:flex; gap:8px; margin-top:8px;">
-    <button onclick="window._saveSettings()" style="background:#4ecca3; color:#1a1a2e; padding:8px 16px; flex:1;">Save</button>
-    <button onclick="window._hideSettings()" style="background:#e94560; color:#fff; padding:8px 16px; flex:0;">Close</button>
+  <div id="dbx-status" style="font-size:0.85rem; margin-bottom:8px; color:#4ecca3;"></div>
+  <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+    <button onclick="window._authorizeDropbox()" style="background:#4ecca3; color:#1a1a2e; padding:10px 16px; flex:1;">🔗 Authorize Dropbox</button>
+    <button onclick="window._disconnectDropbox()" style="background:#e94560; color:#fff; padding:10px 16px; flex:0;">Disconnect</button>
+    <button onclick="window._hideSettings()" style="background:#555; color:#eee; padding:10px 16px; flex:0;">Close</button>
   </div>
-  <p style="font-size:0.7rem; color:#666; margin-top:8px;">Get token at dropbox.com/developers/apps → your app → Generate access token</p>
+  <p style="font-size:0.7rem; color:#666; margin-top:8px;">Connects to your Dropbox Apps/book-scanner folder. One-time authorization.</p>
 </div>
 
 <script>
@@ -560,50 +560,130 @@ button {
   };
 
   // ─── Settings ───
+  var DBX_APP_KEY = 'skoesnt62y7joky';
+  var DBX_REDIRECT = window.location.origin + window.location.pathname;
+
   window._showSettings = function() {
     var panel = document.getElementById('settings-panel');
-    var input = document.getElementById('dropbox-token');
-    input.value = storageGet('dropboxToken') || '';
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    var status = document.getElementById('dbx-status');
+    status.textContent = storageGet('dbxRefreshToken') ? '✅ Dropbox connected' : '⚠️ Not connected';
   };
   window._hideSettings = function() {
     document.getElementById('settings-panel').style.display = 'none';
   };
-  window._saveSettings = function() {
-    var token = document.getElementById('dropbox-token').value.trim();
-    storageSet('dropboxToken', token);
-    document.getElementById('settings-panel').style.display = 'none';
-    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
-    if (statusEl) statusEl.textContent = token ? '✅ Token saved' : '⚠️ Token cleared';
+  window._disconnectDropbox = function() {
+    storageSet('dbxRefreshToken', '');
+    storageSet('dbxAccessToken', '');
+    storageSet('dbxTokenExpiry', '');
+    document.getElementById('dbx-status').textContent = '⚠️ Disconnected';
   };
 
-  // ─── Dropbox Upload ───
-  function uploadToDropbox(filename, content) {
-    var token = storageGet('dropboxToken');
-    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
-    if (!token) {
-      if (statusEl) statusEl.textContent = '⚠️ Set Dropbox token in ⚙️ Settings first';
+  // ─── OAuth PKCE Flow ───
+  function generateCodeVerifier() {
+    var arr = new Uint8Array(32);
+    crypto.getRandomValues(arr);
+    return btoa(String.fromCharCode.apply(null, arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  }
+  function sha256(plain) {
+    var encoder = new TextEncoder();
+    return crypto.subtle.digest('SHA-256', encoder.encode(plain));
+  }
+  function base64urlencode(buf) {
+    var str = '';
+    var bytes = new Uint8Array(buf);
+    for (var i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+    return btoa(str).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  }
+
+  window._authorizeDropbox = function() {
+    var verifier = generateCodeVerifier();
+    storageSet('dbxCodeVerifier', verifier);
+    sha256(verifier).then(function(hash) {
+      var challenge = base64urlencode(hash);
+      var url = 'https://www.dropbox.com/oauth2/authorize' +
+        '?client_id=' + DBX_APP_KEY +
+        '&response_type=code' +
+        '&code_challenge=' + challenge +
+        '&code_challenge_method=S256' +
+        '&redirect_uri=' + encodeURIComponent(DBX_REDIRECT) +
+        '&token_access_type=offline';
+      window.location.href = url;
+    });
+  };
+
+  // Handle OAuth redirect (code in URL params)
+  function handleOAuthRedirect() {
+    var params = new URLSearchParams(window.location.search);
+    var code = params.get('code');
+    if (!code) return;
+    var verifier = storageGet('dbxCodeVerifier');
+    if (!verifier) return;
+    // Exchange code for tokens
+    fetch('https://api.dropboxapi.com/oauth2/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'code=' + code + '&grant_type=authorization_code' +
+        '&client_id=' + DBX_APP_KEY +
+        '&redirect_uri=' + encodeURIComponent(DBX_REDIRECT) +
+        '&code_verifier=' + verifier
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.refresh_token) {
+        storageSet('dbxRefreshToken', data.refresh_token);
+        storageSet('dbxAccessToken', data.access_token);
+        storageSet('dbxTokenExpiry', String(Date.now() + (data.expires_in * 1000)));
+        storageSet('dbxCodeVerifier', '');
+      }
+      // Clean URL
+      window.history.replaceState({}, '', DBX_REDIRECT);
+    });
+  }
+  handleOAuthRedirect();
+
+  // ─── Dropbox Upload (with auto-refresh) ───
+  function getAccessToken(callback) {
+    var expiry = parseInt(storageGet('dbxTokenExpiry') || '0');
+    if (Date.now() < expiry - 60000) {
+      callback(storageGet('dbxAccessToken'));
       return;
     }
-    if (statusEl) statusEl.textContent = '⏳ Uploading to Dropbox...';
-    fetch('https://content.dropboxapi.com/2/files/upload', {
+    var refreshToken = storageGet('dbxRefreshToken');
+    if (!refreshToken) { callback(null); return; }
+    fetch('https://api.dropboxapi.com/oauth2/token', {
       method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Dropbox-API-Arg': JSON.stringify({
-          path: '/' + filename,
-          mode: 'overwrite',
-          autorename: false,
-          mute: false
-        }),
-        'Content-Type': 'application/octet-stream'
-      },
-      body: content
-    }).then(function(resp) {
-      if (resp.ok) { if (statusEl) statusEl.textContent = '✅ Saved to Dropbox!'; }
-      else { resp.text().then(function(t) { if (statusEl) statusEl.textContent = '❌ ' + (JSON.parse(t).error_summary || 'Upload failed'); }); }
-    }).catch(function(err) {
-      if (statusEl) statusEl.textContent = '❌ ' + err.message;
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'grant_type=refresh_token&refresh_token=' + refreshToken + '&client_id=' + DBX_APP_KEY
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.access_token) {
+        storageSet('dbxAccessToken', data.access_token);
+        storageSet('dbxTokenExpiry', String(Date.now() + (data.expires_in * 1000)));
+        callback(data.access_token);
+      } else { callback(null); }
+    }).catch(function() { callback(null); });
+  };
+
+  function uploadToDropbox(filename, content) {
+    var statusEl = document.getElementById('last-scan') || document.getElementById('manual-status');
+    if (statusEl) statusEl.textContent = '⏳ Syncing...';
+    getAccessToken(function(token) {
+      if (!token) {
+        if (statusEl) statusEl.textContent = '⚠️ Tap ⚙️ to authorize Dropbox';
+        return;
+      }
+      fetch('https://content.dropboxapi.com/2/files/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Dropbox-API-Arg': JSON.stringify({ path: '/' + filename, mode: 'overwrite', autorename: false, mute: false }),
+          'Content-Type': 'application/octet-stream'
+        },
+        body: content
+      }).then(function(resp) {
+        if (resp.ok) { if (statusEl) statusEl.textContent = '✅ Saved to Dropbox!'; }
+        else { resp.text().then(function(t) { try { if(statusEl) statusEl.textContent = '❌ ' + JSON.parse(t).error_summary; } catch(e) { if(statusEl) statusEl.textContent = '❌ Upload failed'; } }); }
+      }).catch(function(err) { if (statusEl) statusEl.textContent = '❌ ' + err.message; });
     });
   }
 
