@@ -165,6 +165,17 @@ video {
   cursor: move;
   box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
 }
+.crop-handle {
+  position: absolute;
+  bottom: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  background: #4ecca3;
+  border-radius: 50%;
+  cursor: nwse-resize;
+  touch-action: none;
+}
 .crop-actions {
   display: flex;
   gap: 8px;
@@ -239,7 +250,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.5 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.6 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -288,6 +299,7 @@ button {
       <button class="cover-btn" onclick="window._takeCoverPhoto()">📸 Take Cover Photo</button>
       <input type="file" id="cover-input" accept="image/*" capture="environment" style="display:none">
     </div>
+    <button class="cover-btn" style="background:#7b68ee !important; margin-top:4px;" onclick="window._takeLooseCover()">📷 Cover Photo Only (assign later)</button>
     <button class="add-manual-btn" onclick="window._addManualBook()">✅ Add Book</button>
     <div id="manual-status" style="text-align:center; min-height:1.5em; color:#4ecca3;"></div>
   </div>
@@ -410,6 +422,7 @@ button {
       cropImg.onload = function() {
         var w = cropImg.clientWidth;
         var h = cropImg.clientHeight;
+        // Default crop: centered, book-ish proportions
         // Default crop: centered, 70% of image, book proportions (2:3)
         var cropH = h * 0.85;
         var cropW = cropH * 0.67;
@@ -421,9 +434,14 @@ button {
         cropOverlay.style.width = cropW + 'px';
         cropOverlay.style.height = cropH + 'px';
 
-        // Drag to move crop area
-        var dragging = false, startX, startY, origLeft, origTop;
+        // Add resize handle
+        cropOverlay.innerHTML = '<div class="crop-handle" id="crop-handle"></div>';
+        var handle = document.getElementById('crop-handle');
+
+        // Drag to move crop area (on the overlay itself)
+        var dragging = false, resizing = false, startX, startY, origLeft, origTop, origW, origH;
         cropOverlay.onpointerdown = function(ev2) {
+          if (ev2.target === handle) return; // handled separately
           dragging = true;
           startX = ev2.clientX; startY = ev2.clientY;
           origLeft = parseFloat(cropOverlay.style.left);
@@ -439,11 +457,56 @@ button {
           cropOverlay.style.left = newLeft + 'px';
           cropOverlay.style.top = newTop + 'px';
         };
-        cropOverlay.onpointerup = function() { dragging = false; };
+        cropOverlay.onpointerup = function() { dragging = false; resizing = false; };
+
+        // Resize handle
+        handle.onpointerdown = function(ev3) {
+          ev3.stopPropagation();
+          resizing = true;
+          startX = ev3.clientX; startY = ev3.clientY;
+          origW = parseFloat(cropOverlay.style.width);
+          origH = parseFloat(cropOverlay.style.height);
+          origLeft = parseFloat(cropOverlay.style.left);
+          origTop = parseFloat(cropOverlay.style.top);
+          handle.setPointerCapture(ev3.pointerId);
+        };
+        handle.onpointermove = function(ev3) {
+          if (!resizing) return;
+          var dx = ev3.clientX - startX;
+          var dy = ev3.clientY - startY;
+          var newW = Math.max(40, Math.min(w - origLeft, origW + dx));
+          var newH = Math.max(40, Math.min(h - origTop, origH + dy));
+          cropOverlay.style.width = newW + 'px';
+          cropOverlay.style.height = newH + 'px';
+        };
+        handle.onpointerup = function() { resizing = false; };
       };
     };
     reader.readAsDataURL(file);
   });
+
+  // ─── Loose cover photo (no book association) ───
+  window._takeLooseCover = function() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.capture = 'environment';
+    input.onchange = function(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        // Store as an unassigned cover
+        var covers = JSON.parse(storageGet('looseCovers') || '[]');
+        covers.push({ cover: ev.target.result, timestamp: Date.now() });
+        storageSet('looseCovers', JSON.stringify(covers));
+        var statusEl = document.getElementById('manual-status');
+        if (statusEl) statusEl.textContent = '📷 Cover saved (' + covers.length + ' unassigned)';
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
 
   window._cropConfirm = function() {
     var cropImg = document.getElementById('crop-img');
@@ -555,6 +618,11 @@ button {
       }
       if (data.hasManual) {
         uploadToDropbox('manual_books.json', data.manualJSON);
+      }
+      // Upload loose covers
+      var looseCovers = JSON.parse(storageGet('looseCovers') || '[]');
+      if (looseCovers.length > 0) {
+        uploadToDropbox('loose_covers.json', JSON.stringify(looseCovers, null, 2));
       }
     }
   };

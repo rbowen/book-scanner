@@ -1,33 +1,160 @@
 # Book Scanner
 
-A PWA that uses your phone's camera to scan book barcodes (ISBN) and export
-the list for building a library catalog.
+A two-part system for inventorying a physical book library:
 
-## Usage
+1. **Phone app** — PWA that scans book barcodes and syncs ISBNs to Dropbox
+2. **Desktop tool** — Python script that looks up book metadata and generates a static HTML catalog
 
-1. Open <https://rbowen.github.io/book-scanner/> in Chrome on Android
-2. Grant camera permission when prompted
-3. Point the camera at book barcodes — ISBNs are captured automatically
-4. Hit **💾 Save** to download `isbns.txt` to your phone's Downloads folder
-5. Transfer `isbns.txt` to your Mac via USB
+## Quick Start
 
-## Features
+### Phone (Scanner)
 
-- Native Barcode Detection API (Chrome Android) — no external libraries
-- Deduplication — won't scan the same book twice
-- Haptic feedback on successful scan
-- Manual ISBN entry fallback
-- Persistent list (survives page reload via localStorage)
-- Offline-capable (service worker caches the app)
-- Installable as a home screen app (PWA)
+The scanner is hosted on GitHub Pages:
 
-## Desktop companion
+```
+https://rbowen.github.io/book-scanner/
+```
 
-The `desktop/` directory (coming soon) contains a Python script that reads
-`isbns.txt`, looks up each ISBN via Open Library, and generates a static
-HTML catalog with cover images and metadata.
+Open in Chrome on Android. Can be installed to the home screen as a PWA.
 
-## Deployment
+### Desktop (Catalog Generator)
 
-Push to GitHub and enable Pages (Settings → Pages → Deploy from branch: main).
-The app will be served at `https://rbowen.github.io/book-scanner/`.
+```bash
+cd desktop/
+uv run catalog.py          # Look up ISBNs, generate HTML catalog
+uv run catalog.py edit     # Search and fix book titles/authors/covers
+uv run catalog.py add      # Manually add a book (interactive)
+uv run catalog.py publish  # SCP catalog to web server
+```
+
+## Setup (from scratch on a new machine)
+
+### Prerequisites
+
+- macOS
+- [uv](https://docs.astral.sh/uv/) (`brew install uv`)
+- Python 3.10+ (uv handles this)
+- Dropbox desktop app (syncs `~/Library/CloudStorage/Dropbox/`)
+- An Android phone with Chrome
+
+### 1. Clone the repo
+
+```bash
+cd ~/devel
+git clone git@github.com:rbowen/book-scanner.git
+cd book-scanner
+```
+
+### 2. Set up the desktop config
+
+```bash
+cd desktop
+cp config.json.sample config.json
+# Edit config.json:
+#   - isbns_file: path to your Dropbox isbns.txt
+#   - publish_target: your scp destination (user@host:/path/)
+#   - site_title: whatever you want the catalog page to say
+```
+
+Current default paths:
+- ISBNs: `~/Library/CloudStorage/Dropbox/Apps/book-scanner (1)/isbns.txt`
+- Manual entries: same folder, `manual_books.json`
+
+### 3. Set up Dropbox API (for phone → Dropbox sync)
+
+1. Go to [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps)
+2. Create app → **Scoped access** → **App folder** → name: `book-scanner`
+3. **Permissions tab**: enable `files.content.write` → Submit
+4. **Settings tab**:
+   - Add Redirect URI: `https://rbowen.github.io/book-scanner/`
+   - Set "Allow public clients (Implicit Grant & PKCE)" to **Allow**
+5. Note the **App Key** (goes into `index.html` as `DBX_APP_KEY`)
+
+The phone app uses OAuth PKCE — no app secret needed on the client.
+
+### 4. Authorize on phone
+
+1. Open the scanner URL in Chrome
+2. Tap the **⚙️** in the header
+3. Tap **🔗 Authorize Dropbox**
+4. Allow access when Dropbox prompts
+5. Done — the refresh token is stored in localStorage permanently
+
+### 5. Deploy the phone app
+
+The PWA is served via GitHub Pages:
+
+```bash
+git push origin main
+# GitHub Settings → Pages → Deploy from branch: main
+# Live at: https://rbowen.github.io/book-scanner/
+```
+
+### 6. Publish the catalog
+
+```bash
+cd desktop
+uv run catalog.py           # generates output/index.html + covers/
+uv run catalog.py publish   # scps output/ to your server
+```
+
+## File Structure
+
+```
+book-scanner/
+├── index.html              ← Phone PWA (barcode scanner + manual entry)
+├── manifest.json           ← PWA manifest (installable on Android)
+├── sw.js                   ← Service worker (offline cache)
+├── icons/                  ← PWA icons (192 + 512)
+├── README.md               ← This file
+├── TODO.md                 ← Known issues and planned improvements
+├── .gitignore
+└── desktop/
+    ├── catalog.py          ← Main script (uv run)
+    ├── config.json         ← Your local config (git-ignored)
+    ├── config.json.sample  ← Template for config
+    ├── library.json        ← Book database (git-ignored, generated)
+    └── output/             ← Generated HTML catalog (git-ignored)
+        ├── index.html
+        ├── favicon.ico
+        └── covers/         ← Downloaded cover images
+```
+
+## Data Flow
+
+```
+Phone (Chrome/Android)
+  → scans barcode / manual entry
+  → stores in localStorage
+  → "Sync" uploads isbns.txt + manual_books.json to Dropbox via API
+
+Dropbox (Apps/book-scanner (1)/)
+  → isbns.txt (one ISBN per line)
+  → manual_books.json (title, author, cover base64)
+
+Mac (desktop/catalog.py)
+  → reads from Dropbox
+  → looks up metadata: Open Library → ISBNSearch → Google Books
+  → downloads cover images
+  → generates static HTML catalog
+  → publishes via scp
+```
+
+## ISBN Lookup Sources (in order)
+
+1. **Open Library** — best structured data, free, has covers
+2. **ISBNSearch.org** — scraper fallback, accurate titles
+3. **Google Books** — last resort, often truncates titles
+
+## Known Limitations
+
+- **UPC barcodes** (12 digits): captured but can't be looked up as ISBNs. Use manual entry for these books.
+- **Pre-1970 books**: no ISBN exists. Use manual entry.
+- **Dropbox token refresh**: handled automatically via OAuth PKCE. If auth breaks, tap ⚙️ → Disconnect → re-authorize.
+- **Service worker caching**: after pushing updates, clear site data on phone or visit twice for the new SW to activate.
+- **Generated access tokens** from Dropbox console expire in 4 hours — that's why we use the OAuth refresh flow instead.
+
+## Notes
+
+- Generated by Amazon Quick with Rich Bowen editing after the fact.
+- The Dropbox app folder ended up as `book-scanner (1)` due to re-creating the Dropbox app during setup. This is cosmetic and doesn't affect functionality.

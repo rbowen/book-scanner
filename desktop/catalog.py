@@ -287,6 +287,90 @@ def edit_library():
     print(f"\n  ✅ Updated: {library[lib_idx]['title']}")
 
 
+# ─── Assign Covers ─────────────────────────────────────────────────────────────
+
+
+def assign_covers(config):
+    """Assign loose cover photos from the phone to books in the library."""
+    import base64
+
+    covers_file = Path(config["isbns_file"]).expanduser().parent / "loose_covers.json"
+    if not covers_file.exists():
+        print("No loose covers to assign. Take cover photos on your phone first.")
+        return
+
+    with open(covers_file) as f:
+        try:
+            loose_covers = json.load(f)
+        except json.JSONDecodeError:
+            print("Error reading loose_covers.json")
+            return
+
+    if not loose_covers:
+        print("No unassigned cover photos.")
+        return
+
+    library = load_library()
+    if not library:
+        print("Library is empty. Run catalog.py first to populate it.")
+        return
+
+    print(f"\n── Assign Covers ({len(loose_covers)} photo(s) available) ──\n")
+
+    assigned = 0
+    remaining = []
+    for i, cover_entry in enumerate(loose_covers):
+        print(f"  Cover photo {i + 1}/{len(loose_covers)} (taken {time.strftime('%Y-%m-%d %H:%M', time.localtime(cover_entry['timestamp'] / 1000))})")
+        query = input("  Assign to which book? (search, or Enter to skip): ").strip().lower()
+        if not query:
+            remaining.append(cover_entry)
+            continue
+
+        matches = []
+        for j, book in enumerate(library):
+            searchable = " ".join([book.get("title", ""), " ".join(book.get("authors", [])), book.get("isbn", "")]).lower()
+            if query in searchable:
+                matches.append((j, book))
+
+        if not matches:
+            print(f"    No match for '{query}'. Skipping.")
+            remaining.append(cover_entry)
+            continue
+
+        for idx, (j, book) in enumerate(matches):
+            print(f"    [{idx + 1}] {book.get('title', '?')} — {', '.join(book.get('authors', []))}")
+
+        choice = input(f"    Which? [1-{len(matches)}]: ").strip()
+        if not choice or not choice.isdigit() or int(choice) < 1 or int(choice) > len(matches):
+            remaining.append(cover_entry)
+            continue
+
+        lib_idx = matches[int(choice) - 1][0]
+        cover_data = cover_entry["cover"]
+        if cover_data and cover_data.startswith("data:image"):
+            COVERS_DIR.mkdir(parents=True, exist_ok=True)
+            header, b64data = cover_data.split(",", 1)
+            ext = ".jpg" if "jpeg" in header else ".png"
+            title_slug = library[lib_idx]["title"].replace(" ", "_")[:30]
+            filename = f"{title_slug}{ext}"
+            with open(COVERS_DIR / filename, "wb") as cf:
+                cf.write(base64.b64decode(b64data))
+            library[lib_idx]["local_cover"] = filename
+            print(f"    ✅ Cover assigned: {filename}")
+            assigned += 1
+        else:
+            print("    ⚠️ Invalid cover data. Skipping.")
+            remaining.append(cover_entry)
+
+    save_library(library)
+
+    # Update the loose covers file (remove assigned ones)
+    with open(covers_file, "w") as f:
+        json.dump(remaining, f, indent=2)
+
+    print(f"\n  {assigned} cover(s) assigned. {len(remaining)} remaining.")
+
+
 def lookup_by_title_author(title, author):
     """Search by title and author when no ISBN is available."""
     query = urllib.parse.quote(f'intitle:{title} inauthor:{author}')
@@ -886,12 +970,18 @@ def main():
             if library:
                 generate_catalog(library, config)
             return
+        elif command == "covers":
+            assign_covers(config)
+            library = load_library()
+            if library:
+                generate_catalog(library, config)
+            return
         elif command == "publish":
             publish(config)
             return
         else:
             print(f"Unknown command: {command}")
-            print("Usage: python catalog.py [add|edit|publish]")
+            print("Usage: python catalog.py [add|edit|covers|publish]")
             return
 
     # Default: process ISBNs and generate catalog
@@ -923,6 +1013,12 @@ def main():
             continue
 
         print(f"  🔍 Looking up {isbn}...", end=" ", flush=True)
+
+        # Skip UPC codes (12 digits, not an ISBN)
+        if len(isbn) == 12 and not isbn.startswith('978') and not isbn.startswith('979'):
+            print(f"⚠️  UPC code (not an ISBN) — use manual entry for this book")
+            continue
+
         book = lookup_isbn(isbn)
         if book:
             library.append(book)
