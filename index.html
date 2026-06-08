@@ -250,7 +250,7 @@ button {
 
 <header>
   <h1>📚 Book Scanner</h1>
-  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v1.9 ⚙️</span>
+  <span id="count">0 books</span> <span style="font-size:0.6rem;color:#555" onclick="window._showSettings()">v2.1 ⚙️</span>
 </header>
 
 <div class="tabs">
@@ -269,7 +269,6 @@ button {
   <div id="isbn-entry">
     <input type="text" id="manual-isbn" placeholder="Type ISBN manually" inputmode="numeric">
     <button onclick="window._addManualISBN()">Add</button>
-    <button onclick="window._scanISBNText()" style="background:#7b68ee; color:#fff; padding:10px 12px; flex:0; font-size:0.8rem;">📖 OCR</button>
   </div>
 </div>
 
@@ -367,53 +366,6 @@ button {
     document.getElementById('manual-panel').classList.toggle('active', tab === 'manual');
   };
 
-  // ─── OCR: Scan ISBN from text (copyright page photo) ───
-  window._scanISBNText = function() {
-    if (!('TextDetector' in window)) {
-      lastScanEl.textContent = '⚠️ TextDetector not supported on this device';
-      return;
-    }
-    var input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.capture = 'environment';
-    input.onchange = function(e) {
-      var file = e.target.files[0];
-      if (!file) return;
-      lastScanEl.textContent = '🔍 Scanning text...';
-      var img = new Image();
-      img.onload = function() {
-        var detector = new TextDetector();
-        detector.detect(img).then(function(texts) {
-          var allText = texts.map(function(t) { return t.rawValue; }).join(' ');
-          var isbn13 = allText.match(/97[89][\d\-\s]{10,16}\d/);
-          var isbn10 = allText.match(/\d[\d\-\s]{8,12}[\dXx]/);
-          var isbnLabel = allText.match(/ISBN[:\s\-]*([0-9X\-\s]{10,17})/i);
-          var found = '';
-          if (isbnLabel) {
-            found = isbnLabel[1].replace(/[\-\s]/g, '');
-          } else if (isbn13) {
-            found = isbn13[0].replace(/[\-\s]/g, '');
-          } else if (isbn10) {
-            found = isbn10[0].replace(/[\-\s]/g, '');
-          }
-          if (found && (found.length === 10 || found.length === 13)) {
-            addISBN(found);
-          } else if (found) {
-            document.getElementById('manual-isbn').value = found;
-            lastScanEl.textContent = '⚠️ Found "' + found + '" — check and tap Add';
-          } else {
-            lastScanEl.textContent = '❌ No ISBN found in image. Try manual entry.';
-          }
-        }).catch(function(err) {
-          lastScanEl.textContent = '❌ OCR failed: ' + err.message;
-        });
-      };
-      img.src = URL.createObjectURL(file);
-    };
-    input.click();
-  };
-
   // ─── UI update ───
   function updateUI() {
     countEl.textContent = books.length + ' book' + (books.length !== 1 ? 's' : '');
@@ -452,83 +404,80 @@ button {
     document.getElementById('cover-input').click();
   };
 
+  // ─── Shared crop initialization ───
+  function initCropUI(rawURL) {
+    var cropContainer = document.getElementById('crop-container');
+    var cropImg = document.getElementById('crop-img');
+    var cropOverlay = document.getElementById('crop-overlay');
+    cropImg.src = rawURL;
+    cropContainer.style.display = 'block';
+    document.getElementById('cover-preview').style.display = 'none';
+
+    cropImg.onload = function() {
+      var w = cropImg.clientWidth;
+      var h = cropImg.clientHeight;
+      var cropH = h * 0.85;
+      var cropW = cropH * 0.67;
+      if (cropW > w * 0.9) { cropW = w * 0.9; cropH = cropW / 0.67; }
+      var left = (w - cropW) / 2;
+      var top = (h - cropH) / 2;
+      cropOverlay.style.left = left + 'px';
+      cropOverlay.style.top = top + 'px';
+      cropOverlay.style.width = cropW + 'px';
+      cropOverlay.style.height = cropH + 'px';
+
+      cropOverlay.innerHTML = '<div class="crop-handle" id="crop-handle"></div>';
+      var handle = document.getElementById('crop-handle');
+
+      var dragging = false, resizing = false, startX, startY, origLeft, origTop, origW, origH;
+      cropOverlay.onpointerdown = function(ev2) {
+        if (ev2.target === handle) return;
+        dragging = true;
+        startX = ev2.clientX; startY = ev2.clientY;
+        origLeft = parseFloat(cropOverlay.style.left);
+        origTop = parseFloat(cropOverlay.style.top);
+        cropOverlay.setPointerCapture(ev2.pointerId);
+      };
+      cropOverlay.onpointermove = function(ev2) {
+        if (!dragging) return;
+        var dx = ev2.clientX - startX;
+        var dy = ev2.clientY - startY;
+        var newLeft = Math.max(0, Math.min(w - parseFloat(cropOverlay.style.width), origLeft + dx));
+        var newTop = Math.max(0, Math.min(h - parseFloat(cropOverlay.style.height), origTop + dy));
+        cropOverlay.style.left = newLeft + 'px';
+        cropOverlay.style.top = newTop + 'px';
+      };
+      cropOverlay.onpointerup = function() { dragging = false; resizing = false; };
+
+      handle.onpointerdown = function(ev3) {
+        ev3.stopPropagation();
+        resizing = true;
+        startX = ev3.clientX; startY = ev3.clientY;
+        origW = parseFloat(cropOverlay.style.width);
+        origH = parseFloat(cropOverlay.style.height);
+        origLeft = parseFloat(cropOverlay.style.left);
+        origTop = parseFloat(cropOverlay.style.top);
+        handle.setPointerCapture(ev3.pointerId);
+      };
+      handle.onpointermove = function(ev3) {
+        if (!resizing) return;
+        var dx = ev3.clientX - startX;
+        var dy = ev3.clientY - startY;
+        var newW = Math.max(40, Math.min(w - origLeft, origW + dx));
+        var newH = Math.max(40, Math.min(h - origTop, origH + dy));
+        cropOverlay.style.width = newW + 'px';
+        cropOverlay.style.height = newH + 'px';
+      };
+      handle.onpointerup = function() { resizing = false; };
+    };
+  }
+
   document.getElementById('cover-input').addEventListener('change', function(e) {
     var file = e.target.files[0];
     if (!file) return;
     var reader = new FileReader();
     reader.onload = function(ev) {
-      // Show crop UI instead of directly setting cover
-      var rawURL = ev.target.result;
-      var cropContainer = document.getElementById('crop-container');
-      var cropImg = document.getElementById('crop-img');
-      var cropOverlay = document.getElementById('crop-overlay');
-      cropImg.src = rawURL;
-      cropContainer.style.display = 'block';
-      document.getElementById('cover-preview').style.display = 'none';
-
-      // Wait for image to load, then set default crop area
-      cropImg.onload = function() {
-        var w = cropImg.clientWidth;
-        var h = cropImg.clientHeight;
-        // Default crop: centered, book-ish proportions
-        // Default crop: centered, 70% of image, book proportions (2:3)
-        var cropH = h * 0.85;
-        var cropW = cropH * 0.67;
-        if (cropW > w * 0.9) { cropW = w * 0.9; cropH = cropW / 0.67; }
-        var left = (w - cropW) / 2;
-        var top = (h - cropH) / 2;
-        cropOverlay.style.left = left + 'px';
-        cropOverlay.style.top = top + 'px';
-        cropOverlay.style.width = cropW + 'px';
-        cropOverlay.style.height = cropH + 'px';
-
-        // Add resize handle
-        cropOverlay.innerHTML = '<div class="crop-handle" id="crop-handle"></div>';
-        var handle = document.getElementById('crop-handle');
-
-        // Drag to move crop area (on the overlay itself)
-        var dragging = false, resizing = false, startX, startY, origLeft, origTop, origW, origH;
-        cropOverlay.onpointerdown = function(ev2) {
-          if (ev2.target === handle) return; // handled separately
-          dragging = true;
-          startX = ev2.clientX; startY = ev2.clientY;
-          origLeft = parseFloat(cropOverlay.style.left);
-          origTop = parseFloat(cropOverlay.style.top);
-          cropOverlay.setPointerCapture(ev2.pointerId);
-        };
-        cropOverlay.onpointermove = function(ev2) {
-          if (!dragging) return;
-          var dx = ev2.clientX - startX;
-          var dy = ev2.clientY - startY;
-          var newLeft = Math.max(0, Math.min(w - parseFloat(cropOverlay.style.width), origLeft + dx));
-          var newTop = Math.max(0, Math.min(h - parseFloat(cropOverlay.style.height), origTop + dy));
-          cropOverlay.style.left = newLeft + 'px';
-          cropOverlay.style.top = newTop + 'px';
-        };
-        cropOverlay.onpointerup = function() { dragging = false; resizing = false; };
-
-        // Resize handle
-        handle.onpointerdown = function(ev3) {
-          ev3.stopPropagation();
-          resizing = true;
-          startX = ev3.clientX; startY = ev3.clientY;
-          origW = parseFloat(cropOverlay.style.width);
-          origH = parseFloat(cropOverlay.style.height);
-          origLeft = parseFloat(cropOverlay.style.left);
-          origTop = parseFloat(cropOverlay.style.top);
-          handle.setPointerCapture(ev3.pointerId);
-        };
-        handle.onpointermove = function(ev3) {
-          if (!resizing) return;
-          var dx = ev3.clientX - startX;
-          var dy = ev3.clientY - startY;
-          var newW = Math.max(40, Math.min(w - origLeft, origW + dx));
-          var newH = Math.max(40, Math.min(h - origTop, origH + dy));
-          cropOverlay.style.width = newW + 'px';
-          cropOverlay.style.height = newH + 'px';
-        };
-        handle.onpointerup = function() { resizing = false; };
-      };
+      initCropUI(ev.target.result);
     };
     reader.readAsDataURL(file);
   });
@@ -546,13 +495,7 @@ button {
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function(ev) {
-        // Show crop UI (same as regular cover)
-        var rawURL = ev.target.result;
-        var cropContainer = document.getElementById('crop-container');
-        var cropImg = document.getElementById('crop-img');
-        cropImg.src = rawURL;
-        cropContainer.style.display = 'block';
-        document.getElementById('cover-preview').style.display = 'none';
+        initCropUI(ev.target.result);
       };
       reader.readAsDataURL(file);
     };
